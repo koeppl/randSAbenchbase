@@ -43,6 +43,9 @@ static void assert_file_exists(const char* name) {
 }
 
 static void batch_query(const char* label, const std::string& basename, std::function<uint64_t(uint64_t)> access_sa, bool verify = true) {
+  constexpr size_t MAX_QUERIES = 1e5; //-1ULL;
+  constexpr size_t GROUP_SIZE = 100; //-1ULL;
+
   const std::string query_filename = basename + ".query";
   assert_file_exists(query_filename.c_str());
   
@@ -55,9 +58,11 @@ static void batch_query(const char* label, const std::string& basename, std::fun
 
   my::Timer timer;
   double accumulated_time = 0;
+  double accumulated_group_time = 0;
   uint64_t query_index;
   std::ifstream queryfile(query_filename);
-  for(size_t number_queries = 0; ; ++number_queries) {
+  size_t number_queries = 0;
+  for(; number_queries < MAX_QUERIES; ++number_queries) {
     queryfile.read(reinterpret_cast<char*>(&query_index), 5); // read uint<40> bit integer
     if(!queryfile.good()) { break; }
     if(verify) {
@@ -66,20 +71,22 @@ static void batch_query(const char* label, const std::string& basename, std::fun
     timer.start();
 	const uint64_t answer = access_sa(query_index);
     timer.stop();
-    accumulated_time += timer.restart();
-    if(number_queries % 100 == 0) {
-      fprintf(stderr, "\r%s: avg.time: %f    %lu/%lu", label, accumulated_time/(1+number_queries), number_queries, sa.second);
+    accumulated_group_time += timer.restart();
+    if(number_queries % GROUP_SIZE == 0) {
+      accumulated_time += accumulated_group_time;
+      fprintf(stderr, "\r%s: avg.time: %f group-time: %f, groupsize: %lu   %lu/%lu", label, accumulated_time/(1+number_queries), accumulated_group_time/GROUP_SIZE, GROUP_SIZE, number_queries, sa.second == 0 ? MAX_QUERIES : std::min(sa.second, MAX_QUERIES));
+      accumulated_group_time = 0;
     }
     if(verify) {
       const uint64_t baseline_answer = sa.first[query_index];
       if(baseline_answer != answer) {
         fprintf(stderr, "\nSA[%lu] = %lu, but index returned %lu\n", query_index, baseline_answer, answer);
-        exit(1);
+        // exit(1);
       }
     }
 	// fwrite(&answer, sizeof(decltype(answer)), 1, stdout);
   }
-  fprintf(stderr, "\nalgo=%s total_time=%f avg_time=%f queries=%lu\n", label, accumulated_time, accumulated_time/(sa.second), sa.second);
+  fprintf(stderr, "\nalgo=%s total_time=%f avg_time=%f queries=%lu\n", label, accumulated_time, accumulated_time/number_queries, number_queries);
   queryfile.close();
 }
 
