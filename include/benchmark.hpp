@@ -5,6 +5,8 @@
 #include "dcheck.hpp"
 #include <functional>
 #include <tudocomp/ds/uint_t.hpp>
+#include <numeric>
+
 
 #include <chrono>
 
@@ -43,8 +45,9 @@ static void assert_file_exists(const char* name) {
 }
 
 static void batch_query(const char* label, const std::string& basename, std::function<uint64_t(uint64_t)> access_sa, bool verify = true) {
-  constexpr size_t MAX_QUERIES = 1e5; //-1ULL;
-  constexpr size_t GROUP_SIZE = 100; //-1ULL;
+  constexpr size_t MAX_QUERIES = 1e4; //-1ULL;
+  constexpr size_t QUERY_SAMPLES = 5; //-1ULL;
+  // constexpr size_t GROUP_SIZE = 100; //-1ULL;
 
   const std::string query_filename = basename + ".query";
   assert_file_exists(query_filename.c_str());
@@ -57,8 +60,6 @@ static void batch_query(const char* label, const std::string& basename, std::fun
   }();
 
   my::Timer timer;
-  double accumulated_time = 0;
-  double accumulated_group_time = 0;
   uint64_t query_index;
   std::ifstream queryfile(query_filename);
   size_t number_queries = 0;
@@ -68,25 +69,52 @@ static void batch_query(const char* label, const std::string& basename, std::fun
     if(verify) {
       CHECK_LT(query_index, sa.second);
     }
-    timer.start();
-	const uint64_t answer = access_sa(query_index);
-    timer.stop();
-    accumulated_group_time += timer.restart();
-    if(number_queries % GROUP_SIZE == 0) {
-      accumulated_time += accumulated_group_time;
-      fprintf(stderr, "\r%s: avg.time: %f group-time: %f, groupsize: %lu   %lu/%lu", label, accumulated_time/(1+number_queries), accumulated_group_time/GROUP_SIZE, GROUP_SIZE, number_queries, sa.second == 0 ? MAX_QUERIES : std::min(sa.second, MAX_QUERIES));
-      accumulated_group_time = 0;
-    }
-    if(verify) {
-      const uint64_t baseline_answer = sa.first[query_index];
-      if(baseline_answer != answer) {
-        fprintf(stderr, "\nSA[%lu] = %lu, but index returned %lu\n", query_index, baseline_answer, answer);
-        // exit(1);
+    const uint64_t baseline_answer = verify == true ? static_cast<uint64_t>(sa.first[query_index]) : -1ULL;
+
+    std::vector<double> times;
+    times.reserve(QUERY_SAMPLES);
+
+    for(size_t query_it = 0; query_it < QUERY_SAMPLES; ++query_it) {
+      timer.start();
+      const uint64_t answer = access_sa(query_index);
+      times.push_back(timer.restart());
+      if(verify) {
+        if(baseline_answer != answer) {
+          fprintf(stderr, "\nSA[%lu] = %lu, but index returned %lu\n", query_index, baseline_answer, answer);
+          // exit(1);
+        }
       }
     }
+    const double mean = std::accumulate(times.begin(), times.end(), 0.0)/times.size();
+    double deviation = 0;
+    for(size_t i = 0; i < times.size(); ++i) {
+      const double val =(times[i] - mean);
+      deviation += std::abs(val);
+    }
+    deviation /= times.size();
+
+    // std::vector<double> diff(v.size());
+    // std::transform(v.begin(), v.end(), diff.begin(), [mean](double x) { return x - mean; });
+    //
+    // std::transform(v.begin(), v.end(), diff.begin(),
+    //     std::bind2nd(std::minus<double>(), mean));
+    // double sq_sum = std::inner_product(diff.begin(), diff.end(), diff.begin(), 0.0);
+    // double stdev = std::sqrt(sq_sum / v.size());
+    //
+    //
+    //
+    printf("RESULT algo=%s sample=%zu time=%f timedev=%f\n", label, number_queries, mean, deviation); ///QUERY_SAMPLES);
+    fflush(stdout);
+
+
+    // if(number_queries % GROUP_SIZE == 0) {
+    //   accumulated_time += accumulated_group_time;
+    //   fprintf(stderr, "\r%s: avg.time: %f group-time: %f, groupsize: %lu   %lu/%lu", label, accumulated_time/(1+number_queries), accumulated_group_time/GROUP_SIZE, GROUP_SIZE, number_queries, sa.second == 0 ? MAX_QUERIES : std::min(sa.second, MAX_QUERIES));
+    //   accumulated_group_time = 0;
+    // }
 	// fwrite(&answer, sizeof(decltype(answer)), 1, stdout);
   }
-  fprintf(stderr, "\nalgo=%s total_time=%f avg_time=%f queries=%lu\n", label, accumulated_time, accumulated_time/number_queries, number_queries);
+  // fprintf(stderr, "\nalgo=%s total_time=%f avg_time=%f queries=%lu\n", label, accumulated_time, accumulated_time/number_queries, number_queries);
   queryfile.close();
 }
 
